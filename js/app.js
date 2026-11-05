@@ -1,6 +1,6 @@
 /* ==========================================================================
    Beats Workspace — Multi-user app (Supabase Auth + Realtime channels)
-   Files / notes / calls remain local demo features.
+   Files / notes remain local demos. Calls are real WebRTC.
    ========================================================================== */
 
 const APP = (function () {
@@ -38,6 +38,7 @@ const APP = (function () {
     session = next;
     if (!session) {
       teardownRealtime();
+      if (window.Calls) Calls.teardown().catch(() => {});
       profile = null;
       profiles = [];
       channels = [];
@@ -48,6 +49,7 @@ const APP = (function () {
     await ensureProfile();
     await loadProfiles();
     await loadChannels();
+    await initCalls();
     render();
   }
 
@@ -229,7 +231,8 @@ const APP = (function () {
       E.listEmpty.innerHTML =
         "<p>Direktnachrichten kommen spaeter. Nutze vorerst die Kanaele <strong>allgemein</strong> und <strong>random</strong>.</p>";
     } else if (currentView === "calls") {
-      renderCallsList();
+      loadProfiles().then(() => renderCallsList());
+      return; // renderCallsList paints list; avoid double paint below for calls
     } else if (currentView === "files") {
       renderFilesList();
     } else if (currentView === "notes") {
@@ -264,15 +267,60 @@ const APP = (function () {
     E.listView.style.display = "flex";
     E.convView.style.display = "none";
     E.listTitle.textContent = "Anrufe";
-    UI.renderList(
-      [{ id: "call-demo", name: "Anruf starten", sub: "Nur Demo — kein echtes Audio", color: "#7B2CBF" }],
-      {
-        type: "channel",
-        selectedId: null,
-        onItemClick: () => UI.toast("Anrufe sind nur eine Demo und werden nicht uebertragen."),
-        searchTerm: "",
-      }
-    );
+    const uid = currentUserId();
+    const others = usersForUi().filter((u) => u.id !== uid);
+    E.listItems.innerHTML = "";
+    E.listEmpty.style.display = "none";
+    E.listItems.style.display = "block";
+
+    const note = document.createElement("li");
+    note.className = "call-note";
+    note.style.listStyle = "none";
+    note.textContent =
+      "Audio- und Videoanrufe. Eingehende Anrufe klingeln nur, solange die App offen ist (kein Push).";
+    E.listItems.appendChild(note);
+
+    if (others.length === 0) {
+      const empty = document.createElement("li");
+      empty.className = "list-item";
+      empty.style.pointerEvents = "none";
+      empty.innerHTML =
+        '<div class="item-body"><div class="item-name">Noch niemand online registriert</div><div class="item-sub">Dein Kollege muss sich einmal registrieren, dann erscheint er hier.</div></div>';
+      E.listItems.appendChild(empty);
+      return;
+    }
+
+    others.forEach((u) => {
+      const li = document.createElement("li");
+      li.className = "call-user-row";
+      const initials = (u.name || "?")
+        .split(" ")
+        .map((w) => w[0])
+        .join("")
+        .toUpperCase()
+        .slice(0, 2);
+      li.innerHTML = `
+        <div class="item-avatar" style="background:${u.color || "#7B2CBF"}">${initials}</div>
+        <div class="call-user-meta">
+          <div class="item-name">${UI.escapeHtml(u.name || "Nutzer")}</div>
+          <div class="item-sub">Tippe Audio oder Video</div>
+        </div>
+        <div class="call-user-actions">
+          <button type="button" data-act="audio" data-id="${u.id}">Audio</button>
+          <button type="button" data-act="video" data-id="${u.id}">Video</button>
+        </div>`;
+      li.querySelectorAll("button").forEach((btn) => {
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const id = btn.getAttribute("data-id");
+          const video = btn.getAttribute("data-act") === "video";
+          const peer = usersForUi().find((x) => x.id === id);
+          if (!peer) return;
+          Calls.startCall(peer.id, peer.name, video);
+        });
+      });
+      E.listItems.appendChild(li);
+    });
   }
 
   function renderFilesList() {
@@ -469,20 +517,19 @@ const APP = (function () {
       render();
     });
 
-    E.btnCall.addEventListener("click", () => UI.toast("Anrufe sind nur Demo."));
+    E.btnCall.addEventListener("click", () => {
+      currentView = "calls";
+      selectedConv = null;
+      render();
+    });
     E.btnStartHuddle.addEventListener("click", () => {
-      if (!selectedConv) return;
-      startHuddle(selectedConv.id);
+      currentView = "calls";
+      selectedConv = null;
+      render();
     });
-    E.btnEndHuddle.addEventListener("click", () => {
-      if (!selectedConv) return;
-      endHuddle(selectedConv.id);
-    });
-    E.btnMute.addEventListener("click", () => {
-      E.btnMute.classList.toggle("active");
-      UI.toast(E.btnMute.classList.contains("active") ? "Stumm (Demo)" : "Mikro an (Demo)");
-    });
-    E.btnHuddleVideo.addEventListener("click", () => UI.toast("Kamera nicht verfuegbar (Demo)."));
+    if (E.btnEndHuddle) E.btnEndHuddle.addEventListener("click", () => Calls.hangup());
+    if (E.btnMute) E.btnMute.addEventListener("click", () => Calls.toggleMute());
+    if (E.btnHuddleVideo) E.btnHuddleVideo.addEventListener("click", () => Calls.toggleCamera());
 
     document.querySelectorAll(".nav-item[data-view]").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -581,6 +628,161 @@ const APP = (function () {
     localStore.save(local);
     UI.toast("Huddle beendet");
     render();
+  }
+
+
+  // ---------- WebRTC calls UI ----------
+
+  let callTimerIv = null;
+  let callsBound = false;
+
+  async function initCalls() {
+    if (!window.Calls || !session) return;
+    const name = (profile && (profile.display_name || profile.name)) || "Nutzer";
+    await Calls.init(sb, session.user.id, name);
+    if (!callsBound) {
+      bindCallUi();
+      callsBound = true;
+    }
+  }
+
+  function callInitials(name) {
+    return (name || "?")
+      .split(" ")
+      .map((w) => w[0])
+      .join("")
+      .toUpperCase()
+      .slice(0, 2);
+  }
+
+  function setCallVideos(local, remote, videoCall) {
+    const remoteEl = document.getElementById("call-remote-video");
+    const localEl = document.getElementById("call-local-video");
+    const audioUi = document.getElementById("call-audio-ui");
+    if (videoCall) {
+      if (remoteEl) {
+        remoteEl.style.display = "block";
+        if (remote && remoteEl.srcObject !== remote) remoteEl.srcObject = remote;
+        remoteEl.play().catch(() => {});
+      }
+      if (localEl) {
+        localEl.style.display = "block";
+        if (local && localEl.srcObject !== local) localEl.srcObject = local;
+        localEl.muted = true;
+        localEl.play().catch(() => {});
+      }
+      if (audioUi) audioUi.style.display = "none";
+    } else {
+      if (remoteEl) {
+        // keep element for remote audio even in audio calls
+        remoteEl.style.opacity = "0";
+        remoteEl.style.pointerEvents = "none";
+        if (remote && remoteEl.srcObject !== remote) remoteEl.srcObject = remote;
+        remoteEl.play().catch(() => {});
+      }
+      if (localEl) localEl.style.display = "none";
+      if (audioUi) audioUi.style.display = "block";
+    }
+  }
+
+  function showIncoming(st) {
+    const el = document.getElementById("call-incoming");
+    const active = document.getElementById("call-active");
+    if (active) active.style.display = "none";
+    if (!el || !st.call) return;
+    el.style.display = "flex";
+    document.getElementById("call-incoming-name").textContent = st.call.peerName;
+    document.getElementById("call-incoming-meta").textContent = st.call.video
+      ? "Eingehender Videoanruf"
+      : "Eingehender Audioanruf";
+    document.getElementById("call-incoming-avatar").textContent = callInitials(st.call.peerName);
+  }
+
+  function showActive(st, statusText) {
+    const el = document.getElementById("call-active");
+    const incoming = document.getElementById("call-incoming");
+    if (incoming) incoming.style.display = "none";
+    if (!el || !st.call) return;
+    el.style.display = "flex";
+    document.getElementById("call-status-label").textContent = statusText || "Anruf";
+    document.getElementById("call-peer-label").textContent = st.call.peerName || "";
+    document.getElementById("call-active-name").textContent = st.call.peerName || "Anruf";
+    document.getElementById("call-active-avatar").textContent = callInitials(st.call.peerName);
+    document.getElementById("btn-call-cam").style.display = st.call.video ? "" : "none";
+    document.getElementById("btn-call-flip").style.display = st.call.video ? "" : "none";
+    setCallVideos(st.localStream, st.remoteStream, st.call.video);
+  }
+
+  function hideCallUi() {
+    const a = document.getElementById("call-active");
+    const i = document.getElementById("call-incoming");
+    if (a) a.style.display = "none";
+    if (i) i.style.display = "none";
+    const remoteEl = document.getElementById("call-remote-video");
+    const localEl = document.getElementById("call-local-video");
+    if (remoteEl) {
+      remoteEl.srcObject = null;
+      remoteEl.style.opacity = "";
+      remoteEl.style.pointerEvents = "";
+      remoteEl.style.display = "";
+    }
+    if (localEl) localEl.srcObject = null;
+    if (callTimerIv) {
+      clearInterval(callTimerIv);
+      callTimerIv = null;
+    }
+  }
+
+  function startTimer() {
+    if (callTimerIv) clearInterval(callTimerIv);
+    const label = document.getElementById("call-timer");
+    const status = document.getElementById("call-status-label");
+    callTimerIv = setInterval(() => {
+      const st = Calls.getState();
+      const ms = st.elapsedMs || 0;
+      const s = Math.floor(ms / 1000);
+      const mm = String(Math.floor(s / 60)).padStart(2, "0");
+      const ss = String(s % 60).padStart(2, "0");
+      if (label) label.textContent = mm + ":" + ss;
+      if (status && st.state === "in-call") status.textContent = mm + ":" + ss;
+    }, 500);
+  }
+
+  function bindCallUi() {
+    Calls.on((event, data) => {
+      if (event === "ringing-in") showIncoming(data);
+      if (event === "ringing-out") showActive(data, "Klingelt…");
+      if (event === "connecting") showActive(data, "Verbinde…");
+      if (event === "in-call") {
+        showActive(data, "Verbunden");
+        startTimer();
+      }
+      if (event === "local-stream" || event === "remote-stream") {
+        const st = Calls.getState();
+        if (st.call) setCallVideos(st.localStream, st.remoteStream, st.call.video);
+      }
+      if (event === "controls") {
+        const muteBtn = document.getElementById("btn-call-mute");
+        const camBtn = document.getElementById("btn-call-cam");
+        if (muteBtn) muteBtn.classList.toggle("active", !!data.muted);
+        if (camBtn) camBtn.classList.toggle("active", !!data.cameraOff);
+      }
+      if (event === "ended") {
+        hideCallUi();
+        const reason = (data && data.reason) || "";
+        if (reason === "declined") UI.toast("Anruf abgelehnt");
+        else if (reason === "busy") UI.toast("Besetzt");
+        else if (reason === "remote-hangup") UI.toast("Aufgelegt");
+      }
+      if (event === "error") UI.toast((data && data.message) || "Anruf-Fehler");
+    });
+
+    document.getElementById("btn-call-accept").addEventListener("click", () => Calls.accept());
+    document.getElementById("btn-call-decline").addEventListener("click", () => Calls.decline());
+    document.getElementById("btn-call-hangup").addEventListener("click", () => Calls.hangup());
+    document.getElementById("btn-call-mute").addEventListener("click", () => Calls.toggleMute());
+    document.getElementById("btn-call-cam").addEventListener("click", () => Calls.toggleCamera());
+    document.getElementById("btn-call-flip").addEventListener("click", () => Calls.switchCamera());
   }
 
   return { init };

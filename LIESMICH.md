@@ -1,6 +1,6 @@
 # Beats Workspace
 
-Mobile-first Team-Chat als PWA.
+Mobile-first Team-Chat und Anrufe als PWA.
 
 ## Live
 
@@ -10,12 +10,13 @@ https://beat71schumacher-collab.github.io/beats-workspace/
 
 - Anmeldung / Registrierung (E-Mail + Passwort) via Supabase
 - Gemeinsame Kanaele (`allgemein`, `random`) mit Live-Nachrichten
-- Anrufe, Dateien und Notizen sind noch lokale Demos
+- Audio- und Videoanrufe (WebRTC, 1:1). Klingelt nur bei offener App (kein Push).
+- Dateien und Notizen sind noch lokale Demos
 
-## Lokal starten
+## Anrufe
 
-```bash
-npx --yes serve -l 4173 .
-```
+1. Beide Personen oeffnen die App und bleiben eingeloggt.
+2. Unter **Anrufe** die andere Person waehlen → Audio oder Video.
+3. Annehmen / Ablehnen / Auflegen, Stummschalten, Kamera an/aus, Kamera wechseln.
 
-Dann http://localhost:4173 oeffnen.
+Hinweis: Auf manchen Mobilfunknetzen ohne funktionierendes STUN/TURN kann die Verbindung scheitern (NAT). WLAN hilft meist.
