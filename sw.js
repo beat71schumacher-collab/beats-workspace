@@ -1,5 +1,5 @@
 /* Beats Workspace — Service Worker (app shell only; never cache Supabase). */
-const CACHE_NAME = "beats-workspace-v6";
+const CACHE_NAME = "beats-workspace-v7";
 
 const APP_SHELL = [
   "./",

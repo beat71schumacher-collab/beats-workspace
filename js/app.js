@@ -50,6 +50,7 @@ const APP = (function () {
       channels = [];
       messages = [];
       selectedConv = null;
+      document.getElementById("app")?.classList.remove("app-chat-open");
       return;
     }
     await ensureProfile();
@@ -310,6 +311,7 @@ const APP = (function () {
 
   function render() {
     if (!session) return;
+    document.getElementById("app").classList.toggle("app-chat-open", !!selectedConv);
     const users = usersForUi();
     const uid = currentUserId();
     const E = UI.els;

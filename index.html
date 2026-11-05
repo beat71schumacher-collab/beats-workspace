@@ -2,7 +2,7 @@
 <html lang="de">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content">
   <meta name="theme-color" content="#7B2CBF">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="Beats Workspace">
@@ -146,22 +146,26 @@
       <!-- Conversation view -->
       <section class="conversation-view" id="conversation-view" style="display:none;" aria-label="Conversation">
         <header class="conv-header">
-          <button class="icon-button" id="btn-back" aria-label="Back to list">&#9664;</button>
-          <div class="conv-identity">
-            <img class="avatar conv-avatar" id="conv-avatar" src="" alt="">
-            <div class="conv-meta">
-              <h2 id="conv-title">Conversation</h2>
-              <p id="conv-subtitle" class="conv-subtitle">2 members &bull; Active</p>
+          <div class="conv-header-row">
+            <button class="icon-button" id="btn-back" aria-label="Zurück">&#9664;</button>
+            <div class="conv-identity">
+              <img class="avatar conv-avatar" id="conv-avatar" src="" alt="">
+              <div class="conv-meta">
+                <h2 id="conv-title">Conversation</h2>
+                <p id="conv-subtitle" class="conv-subtitle">Kanal</p>
+              </div>
+            </div>
+            <div class="conv-header-actions">
+              <button class="icon-button" id="btn-delete-channel" title="Kanal löschen" style="display:none;">&#128465;</button>
+              <button class="icon-button" id="btn-call" title="Anruf">&#9742;</button>
             </div>
           </div>
-          <div class="conv-tabs" role="tablist" aria-label="Conversation tabs">
+          <div class="conv-tabs" role="tablist" aria-label="Kanal-Tabs">
             <button class="conv-tab active" data-tab="chat" role="tab" aria-selected="true">Chat</button>
             <button class="conv-tab" data-tab="files" role="tab" aria-selected="false">Dateien</button>
             <button class="conv-tab" data-tab="notes" role="tab" aria-selected="false">Notizen</button>
-            <button class="conv-tab" data-tab="huddle" role="tab" aria-selected="false">Anruf</button>
+            <button class="conv-tab" data-tab="huddle" role="tab" aria-selected="false">Anrufe</button>
           </div>
-          <button class="icon-button" id="btn-delete-channel" title="Kanal löschen" style="display:none;">&#128465;</button>
-          <button class="icon-button" id="btn-call" title="Start call">&#9742;</button>
         </header>
 
         <div class="conv-body">

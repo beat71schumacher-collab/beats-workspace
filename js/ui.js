@@ -208,7 +208,7 @@ const UI = (function () {
       els.convSubtitle.textContent = "Direktnachricht";
     } else {
       const memberCount = (conv.members || []).length;
-      els.convSubtitle.textContent = `${memberCount} Mitglieder • ${formatRelative(conv.createdAt)}`;
+      els.convSubtitle.textContent = `${memberCount} ${memberCount === 1 ? 'Mitglied' : 'Mitglieder'} • ${formatRelative(conv.createdAt)}`;
     }
     if (conv.avatar) {
       els.convAvatar.src = conv.avatar;
