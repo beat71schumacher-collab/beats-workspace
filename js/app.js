@@ -1,113 +1,219 @@
 /* ==========================================================================
-   Beats Workspace — Application logic
-   Ties together data, storage, and UI. Implements local interactions:
-   channels, direct messages, messages, threads, reactions, file attachments,
-   search, notes, and a simulated huddle (phone call) interface.
-
-   NOTE: Audio/video calling and real file storage are mocked/simulated for
-   this local demo and are clearly labeled as such.
+   Beats Workspace — Multi-user app (Supabase Auth + Realtime channels)
+   Files / notes / calls remain local demo features.
    ========================================================================== */
 
 const APP = (function () {
-  let state = null; // full app state from storage
-  let currentView = "home"; // home | channels | messages | calls | files | notes
-  let selectedConv = null; // { id, type, name, topic, createdBy, members, createdAt, avatar, color }
-  let openThreadRoot = null; // message id when viewing a thread
+  let sb = null;
+  let session = null;
+  let profile = null;
+  let profiles = [];
+  let channels = [];
+  let messages = []; // current channel messages
+  let local = { files: [], notes: {}, huddles: {} };
+  let currentView = "home";
+  let selectedConv = null;
+  let openThreadRoot = null;
   let searchTerm = "";
+  let realtimeChannel = null;
+  let messageIds = new Set();
 
-  // ---------- Init ----------
+  async function init() {
+    if (!window.supabase || !window.supabase.createClient) {
+      console.error("supabase-js CDN missing");
+      return;
+    }
+    sb = window.supabase.createClient(SB_URL, SB_ANON_KEY, {
+      auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
+    });
+    local = localStore.load();
 
-  function init() {
-    state = storage.load();
-    ensureCurrentUser();
-
-    // Bind UI -> app callbacks
+    await Auth.init(sb, { onSessionChange: handleSession });
     bindSearch();
     bindComposer();
     bindGlobalActions();
+  }
 
-    // Render initial
+  async function handleSession(next) {
+    session = next;
+    if (!session) {
+      teardownRealtime();
+      profile = null;
+      profiles = [];
+      channels = [];
+      messages = [];
+      selectedConv = null;
+      return;
+    }
+    await ensureProfile();
+    await loadProfiles();
+    await loadChannels();
     render();
   }
 
-  function ensureCurrentUser() {
-    if (!state.users.find((u) => u.id === CURRENT_USER_ID)) {
-      state.users.push({
-        id: CURRENT_USER_ID,
-        name: "You",
-        email: "you@beatswork.example",
-        role: "member",
-        status: "online",
-        avatar: null,
-        color: "#7B2CBF",
-      });
-      storage.save(state);
+  async function ensureProfile() {
+    const uid = session.user.id;
+    const metaName =
+      (session.user.user_metadata && session.user.user_metadata.display_name) ||
+      (session.user.email || "Nutzer").split("@")[0];
+    const { data, error } = await sb.from("profiles").select("*").eq("id", uid).maybeSingle();
+    if (error) {
+      console.warn(error);
+      UI.toast("Profil konnte nicht geladen werden.");
+      return;
+    }
+    if (!data) {
+      const colors = ["#7B2CBF", "#0EA5E9", "#10B981", "#F59E0B", "#EC4899", "#6366F1"];
+      const color = colors[Math.abs(hashCode(uid)) % colors.length];
+      const { data: created, error: insErr } = await sb
+        .from("profiles")
+        .insert({ id: uid, display_name: metaName, color })
+        .select()
+        .single();
+      if (insErr) {
+        console.warn(insErr);
+        profile = { id: uid, display_name: metaName, color };
+      } else {
+        profile = created;
+      }
+    } else {
+      profile = data;
     }
   }
 
-  // ---------- State helpers ----------
-
-  function getConv(id, type) {
-    if (type === "channel") return state.channels.find((c) => c.id === id);
-    if (type === "dm") return state.dms.find((d) => d.id === id);
-    return null;
+  function hashCode(str) {
+    let h = 0;
+    for (let i = 0; i < str.length; i++) h = (h << 5) - h + str.charCodeAt(i);
+    return h | 0;
   }
 
-  function getMessagesForConv(conv) {
-    const msgs = [];
-    state.messages.forEach((m) => {
-      if (conv.type === "channel" && m.channelId === conv.id && !m.threadRootId) msgs.push(m);
-      if (conv.type === "dm" && m.dmId === conv.id && !m.threadRootId) msgs.push(m);
-    });
-    if (openThreadRoot) {
-      const threadMsgs = state.messages.filter(
-        (m) => m.threadRootId === openThreadRoot
-      );
-      const replies = state.threads.filter((t) => t.threadRootId === openThreadRoot);
-      const all = [...threadMsgs, ...replies];
-      all.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
-      return all;
+  async function loadProfiles() {
+    const { data, error } = await sb.from("profiles").select("*").order("display_name");
+    if (error) {
+      console.warn(error);
+      profiles = profile ? [profile] : [];
+      return;
     }
-    msgs.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
-    return msgs;
+    profiles = (data || []).map(mapProfile);
   }
 
-  function getFilesForConv(conv) {
-    return state.files.filter(
-      (f) => (conv.type === "channel" ? f.channelId === conv.id : f.dmId === conv.id)
-    );
+  function mapProfile(p) {
+    return {
+      id: p.id,
+      name: p.display_name,
+      display_name: p.display_name,
+      email: "",
+      role: "member",
+      status: "online",
+      avatar: null,
+      color: p.color || "#94A3B8",
+    };
   }
 
-  function userColor(id) {
-    const u = state.users.find((u) => u.id === id);
-    return u ? u.color : "#94A3B8";
+  async function loadChannels() {
+    const { data, error } = await sb.from("channels").select("*").order("name");
+    if (error) {
+      console.warn(error);
+      UI.toast("Kanaele konnten nicht geladen werden.");
+      channels = [];
+      return;
+    }
+    channels = (data || []).map((c) => ({
+      id: c.id,
+      name: c.name,
+      topic: c.topic || "",
+      type: "channel",
+      createdBy: c.created_by,
+      createdAt: c.created_at,
+      members: profiles.map((p) => p.id),
+    }));
+  }
+
+  function currentUserId() {
+    return session && session.user ? session.user.id : null;
+  }
+
+  function usersForUi() {
+    return profiles.length ? profiles : profile ? [mapProfile(profile)] : [];
+  }
+
+  // ---------- Realtime ----------
+
+  function teardownRealtime() {
+    if (realtimeChannel) {
+      sb.removeChannel(realtimeChannel);
+      realtimeChannel = null;
+    }
+  }
+
+  function subscribeChannel(channelId) {
+    teardownRealtime();
+    messageIds = new Set(messages.map((m) => m.id));
+    realtimeChannel = sb
+      .channel("room:" + channelId)
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "messages", filter: "channel_id=eq." + channelId },
+        (payload) => {
+          const row = payload.new;
+          if (!row || messageIds.has(row.id)) return;
+          const msg = mapMessage(row);
+          messageIds.add(msg.id);
+          messages.push(msg);
+          if (selectedConv && selectedConv.id === channelId) {
+            UI.appendMessage(msg, usersForUi(), currentUserId(), onToggleReaction, onOpenThread);
+          }
+        }
+      )
+      .subscribe();
+  }
+
+  function mapMessage(row) {
+    return {
+      id: row.id,
+      text: row.body,
+      body: row.body,
+      authorId: row.author_id,
+      channelId: row.channel_id,
+      createdAt: row.created_at,
+      reactions: [],
+      replyCount: 0,
+      threadRootId: null,
+    };
+  }
+
+  async function loadMessages(channelId) {
+    const { data, error } = await sb
+      .from("messages")
+      .select("*")
+      .eq("channel_id", channelId)
+      .order("created_at", { ascending: true })
+      .limit(200);
+    if (error) {
+      console.warn(error);
+      messages = [];
+      return;
+    }
+    messages = (data || []).map(mapMessage);
+    messageIds = new Set(messages.map((m) => m.id));
   }
 
   // ---------- Rendering ----------
 
   function render() {
-    const users = state.users;
+    if (!session) return;
+    const users = usersForUi();
+    const uid = currentUserId();
     const E = UI.els;
 
-    // Sidebar
-    UI.renderSidebar(users, CURRENT_USER_ID);
+    UI.renderSidebar(users, uid);
     UI.setActiveNav(currentView);
 
-    if (currentView === "home") {
+    if (currentView === "home" || currentView === "channels") {
       E.listView.style.display = "flex";
       E.convView.style.display = "none";
-      E.listTitle.textContent = "Kanäle";
-      UI.renderList(state.channels, {
-        type: "channel",
-        selectedId: null,
-        onItemClick: (c) => openConversation(c),
-        searchTerm,
-      });
-    } else if (currentView === "channels") {
-      E.listView.style.display = "flex";
-      E.convView.style.display = "none";
-      E.listTitle.textContent = "Kanäle";
-      UI.renderList(state.channels, {
+      E.listTitle.textContent = "Kanaele";
+      UI.renderList(channels, {
         type: "channel",
         selectedId: selectedConv && selectedConv.type === "channel" ? selectedConv.id : null,
         onItemClick: (c) => openConversation(c),
@@ -117,17 +223,11 @@ const APP = (function () {
       E.listView.style.display = "flex";
       E.convView.style.display = "none";
       E.listTitle.textContent = "Direktnachrichten";
-      const dms = state.dms.map((d) => ({
-        ...d,
-        name: d.name,
-        color: userColor(d.members.find((m) => m !== CURRENT_USER_ID) || d.members[0]),
-      }));
-      UI.renderList(dms, {
-        type: "dm",
-        selectedId: selectedConv && selectedConv.type === "dm" ? selectedConv.id : null,
-        onItemClick: (d) => openConversation(d),
-        searchTerm,
-      });
+      E.listItems.innerHTML = "";
+      E.listEmpty.style.display = "block";
+      E.listItems.style.display = "none";
+      E.listEmpty.innerHTML =
+        "<p>Direktnachrichten kommen spaeter. Nutze vorerst die Kanaele <strong>allgemein</strong> und <strong>random</strong>.</p>";
     } else if (currentView === "calls") {
       renderCallsList();
     } else if (currentView === "files") {
@@ -136,27 +236,23 @@ const APP = (function () {
       renderNotesList();
     }
 
-    // Conversation view
     if (selectedConv) {
       E.convView.style.display = "flex";
       E.listView.style.display = "none";
       UI.renderConvHeader(selectedConv, users);
-      const tab = openThreadRoot ? "chat" : (selectedConv._activeTab || "chat");
+      const tab = selectedConv._activeTab || "chat";
       UI.setConvTabs(tab);
-      const msgs = getMessagesForConv(selectedConv);
-      UI.renderMessages(msgs, users, CURRENT_USER_ID, onReply, onToggleReaction, onOpenThread);
-      UI.showThreadBanner(!!openThreadRoot, selectedConv.name || selectedConv.title);
-      UI.setThreadTypingPlaceholder(openThreadRoot ? "Antwort schreiben..." : "Nachricht schreiben...");
+      UI.renderMessages(messages, users, uid, onReply, onToggleReaction, onOpenThread);
+      UI.showThreadBanner(false, selectedConv.name);
+      UI.setThreadTypingPlaceholder("Nachricht schreiben...");
       UI.renderFiles(getFilesForConv(selectedConv), selectedConv.id, selectedConv.type);
-      UI.renderNotes(selectedConv.id, state.notes);
+      UI.renderNotes(selectedConv.id, local.notes);
       UI.setComposerEnabled(true);
-
-      // Huddle
-      const huddle = state.huddles && state.huddles[selectedConv.id];
+      const huddle = local.huddles && local.huddles[selectedConv.id];
       UI.setHuddleActive(!!huddle);
       if (huddle) {
-        UI.renderHuddleParticipants(huddle.participants, users, CURRENT_USER_ID);
-        E.huddleStatusText.textContent = "Huddle active";
+        UI.renderHuddleParticipants(huddle.participants, users, uid);
+        E.huddleStatusText.textContent = "Huddle aktiv (Demo)";
       }
     } else {
       E.convView.style.display = "none";
@@ -168,32 +264,14 @@ const APP = (function () {
     E.listView.style.display = "flex";
     E.convView.style.display = "none";
     E.listTitle.textContent = "Anrufe";
-    const items = [
+    UI.renderList(
+      [{ id: "call-demo", name: "Anruf starten", sub: "Nur Demo — kein echtes Audio", color: "#7B2CBF" }],
       {
-        id: "call-huddle",
-        name: "Anruf starten",
-        sub: "Audio huddle with teammates (simulated)",
-        color: "#7B2CBF",
-      },
-    ];
-    UI.renderList(items, {
-      type: "channel",
-      selectedId: null,
-      onItemClick: () => {
-        if (selectedConv) startHuddle(selectedConv.id);
-        else UI.toast("Open a conversation first, then start a huddle.");
-      },
-      searchTerm: "",
-    });
-    // Add a hint
-    E.listItems.insertAdjacentHTML(
-      "beforeend",
-      `<li class="list-item" style="pointer-events:none;opacity:0.6;">
-         <div class="item-body">
-           <div class="item-name">Anrufe gibt es pro Unterhaltung.</div>
-           <div class="item-sub">Öffne einen Kanal oder eine Direktnachricht und wechsle zum Tab «Anruf».</div>
-         </div>
-       </li>`
+        type: "channel",
+        selectedId: null,
+        onItemClick: () => UI.toast("Anrufe sind nur eine Demo und werden nicht uebertragen."),
+        searchTerm: "",
+      }
     );
   }
 
@@ -201,31 +279,23 @@ const APP = (function () {
     const E = UI.els;
     E.listView.style.display = "flex";
     E.convView.style.display = "none";
-    E.listTitle.textContent = "Alle Dateien";
-    const files = [...state.files].sort(
-      (a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt)
-    );
+    E.listTitle.textContent = "Dateien (Demo)";
+    const files = [...local.files].sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
     E.listItems.innerHTML = "";
     if (files.length === 0) {
       E.listEmpty.style.display = "block";
+      E.listEmpty.innerHTML = "<p>Keine lokalen Demo-Dateien. Uploads bleiben nur auf diesem Geraet.</p>";
       E.listItems.style.display = "none";
       return;
     }
     E.listEmpty.style.display = "none";
     E.listItems.style.display = "block";
     files.forEach((f) => {
-      const conv = getConv(f.channelId || f.dmId, f.channelId ? "channel" : "dm");
       const li = document.createElement("li");
       li.className = "list-item";
-      const icon = f.type === "pdf" ? "📄" : f.type === "fig" ? "🎨" : f.type === "yaml" ? "📜" : "📎";
-      li.innerHTML = `
-        <div class="item-avatar">${icon}</div>
-        <div class="item-body">
-          <div class="item-name" title="${UI.escapeHtml(f.name)}">${UI.escapeHtml(f.name)}</div>
-          <div class="item-sub">#${conv ? conv.name : "unknown"} • ${UI.formatRelative(f.uploadedAt)}</div>
-        </div>
-        <div class="item-count">${UI.escapeHtml(f.size)}</div>
-      `;
+      li.innerHTML = `<div class="item-avatar">📎</div><div class="item-body"><div class="item-name">${UI.escapeHtml(
+        f.name
+      )}</div><div class="item-sub">Nur lokal • ${UI.formatRelative(f.uploadedAt)}</div></div>`;
       E.listItems.appendChild(li);
     });
   }
@@ -234,11 +304,12 @@ const APP = (function () {
     const E = UI.els;
     E.listView.style.display = "flex";
     E.convView.style.display = "none";
-    E.listTitle.textContent = "Notizen";
-    const items = [...state.channels, ...state.dms].filter((c) => state.notes[c.id]);
+    E.listTitle.textContent = "Notizen (Demo)";
+    const items = channels.filter((c) => local.notes[c.id]);
     E.listItems.innerHTML = "";
     if (items.length === 0) {
       E.listEmpty.style.display = "block";
+      E.listEmpty.innerHTML = "<p>Notizen sind lokal und nur auf diesem Geraet sichtbar.</p>";
       E.listItems.style.display = "none";
       return;
     }
@@ -247,17 +318,9 @@ const APP = (function () {
     items.forEach((c) => {
       const li = document.createElement("li");
       li.className = "list-item";
-      li.innerHTML = `
-        <div class="item-avatar" style="background:${userColor(c.createdBy || c.members?.[0])}">
-          <svg viewBox="0 0 24 24" style="width:16px;height:16px;display:block;margin:auto;">
-            <text x="12" y="15" font-family="Arial,Helvetica,sans-serif" font-size="9" font-weight="700" fill="#fff" text-anchor="middle">📝</text>
-          </svg>
-        </div>
-        <div class="item-body">
-          <div class="item-name">${UI.escapeHtml(c.name || c.title)}</div>
-          <div class="item-sub">Gemeinsame Notizen</div>
-        </div>
-      `;
+      li.innerHTML = `<div class="item-avatar" style="background:#7B2CBF">📝</div><div class="item-body"><div class="item-name">${UI.escapeHtml(
+        c.name
+      )}</div><div class="item-sub">Lokale Notiz</div></div>`;
       li.addEventListener("click", () => {
         currentView = "home";
         openConversation(c);
@@ -266,123 +329,69 @@ const APP = (function () {
     });
   }
 
-  // ---------- Conversation actions ----------
+  function getFilesForConv(conv) {
+    return local.files.filter((f) => f.channelId === conv.id);
+  }
 
-  function openConversation(conv) {
+  async function openConversation(conv) {
     selectedConv = conv;
     openThreadRoot = null;
     conv._activeTab = conv._activeTab || "chat";
+    await loadMessages(conv.id);
+    subscribeChannel(conv.id);
     render();
   }
 
-  function onReply(text) {
-    if (!selectedConv) return;
-    if (!text || !text.trim()) return;
-    const msg = {
-      id: "msg_" + Date.now(),
-      text: text.trim(),
-      authorId: CURRENT_USER_ID,
-      createdAt: new Date().toISOString(),
-      reactions: [],
-      replyCount: 0,
-      threadRootId: openThreadRoot || null,
-    };
-    if (selectedConv.type === "channel") msg.channelId = selectedConv.id;
-    if (selectedConv.type === "dm") msg.dmId = selectedConv.id;
-    if (openThreadRoot) msg.threadRootId = openThreadRoot;
-
-    state.messages.push(msg);
-    if (openThreadRoot) {
-      const root = state.messages.find((m) => m.id === openThreadRoot);
-      if (root) root.replyCount = (root.replyCount || 0) + 1;
-    }
-    storage.save(state);
-    UI.appendMessage(msg, state.users, CURRENT_USER_ID, onToggleReaction, onOpenThread);
+  async function onReply(text) {
+    if (!selectedConv || !session) return;
+    const body = (text || "").trim();
+    if (!body) return;
     UI.clearMessageInput();
-    render();
-  }
-
-  function onToggleReaction(msgId, emoji) {
-    const msg = state.messages.find((m) => m.id === msgId) || state.threads.find((t) => t.id === msgId);
-    if (!msg) return;
-    msg.reactions = msg.reactions || [];
-    const existing = msg.reactions.find((r) => r.emoji === emoji);
-    if (existing) {
-      if (existing.users.includes(CURRENT_USER_ID)) {
-        existing.users = existing.users.filter((u) => u !== CURRENT_USER_ID);
-        if (existing.users.length === 0) {
-          msg.reactions = msg.reactions.filter((r) => r.emoji !== emoji);
-        }
-      } else {
-        existing.users.push(CURRENT_USER_ID);
-      }
-    } else {
-      msg.reactions.push({ emoji, users: [CURRENT_USER_ID] });
-    }
-    storage.save(state);
-    render();
-  }
-
-  function onOpenThread(rootMsg) {
-    openThreadRoot = rootMsg.id;
-    selectedConv._activeTab = "chat";
-    render();
-  }
-
-  function closeThread() {
-    openThreadRoot = null;
-    render();
-  }
-
-  // ---------- Creation ----------
-
-  function createChannel(name, topic) {
-    if (!name || !name.trim()) return;
-    const id = "c_" + Date.now();
-    const channel = {
-      id,
-      name: name.trim(),
-      type: "channel",
-      topic: topic || "",
-      createdBy: CURRENT_USER_ID,
-      createdAt: new Date().toISOString(),
-      members: [CURRENT_USER_ID],
-    };
-    state.channels.push(channel);
-    state.notes[id] = "# Notes for " + name.trim() + "\n\n";
-    storage.save(state);
-    UI.toast(`Channel "${name.trim()}" created`);
-    openConversation(channel);
-    render();
-  }
-
-  function createDM(userId) {
-    if (!userId || userId === CURRENT_USER_ID) return;
-    const existing = state.dms.find(
-      (d) => d.members.includes(CURRENT_USER_ID) && d.members.includes(userId)
-    );
-    if (existing) {
-      openConversation(existing);
-      render();
+    const { data, error } = await sb
+      .from("messages")
+      .insert({ channel_id: selectedConv.id, author_id: currentUserId(), body })
+      .select()
+      .single();
+    if (error) {
+      console.warn(error);
+      UI.toast("Nachricht konnte nicht gesendet werden.");
       return;
     }
-    const user = state.users.find((u) => u.id === userId);
-    const dm = {
-      id: "dm_" + Date.now(),
-      type: "dm",
-      name: user ? user.name : "User",
-      members: [CURRENT_USER_ID, userId],
-      createdAt: new Date().toISOString(),
-    };
-    state.dms.push(dm);
-    state.notes[dm.id] = "# Notes\n\n";
-    storage.save(state);
-    UI.toast(`Message started with ${dm.name}`);
-    openConversation(dm);
-    render();
+    // Realtime may also deliver; avoid duplicate.
+    if (!messageIds.has(data.id)) {
+      const msg = mapMessage(data);
+      messageIds.add(msg.id);
+      messages.push(msg);
+      UI.appendMessage(msg, usersForUi(), currentUserId(), onToggleReaction, onOpenThread);
+    }
   }
 
-  // ---------- Search ----------
+  function onToggleReaction() {
+    UI.toast("Reaktionen kommen spaeter (Demo).");
+  }
+
+  function onOpenThread() {
+    UI.toast("Threads kommen spaeter. Schreib einfach im Kanal weiter.");
+  }
+
+  async function createChannel(name, topic) {
+    const n = (name || "").trim();
+    if (!n) return;
+    const { data, error } = await sb
+      .from("channels")
+      .insert({ name: n, topic: topic || "", created_by: currentUserId() })
+      .select()
+      .single();
+    if (error) {
+      UI.toast(error.message || "Kanal konnte nicht erstellt werden.");
+      return;
+    }
+    await loadChannels();
+    UI.toast('Kanal "' + n + '" erstellt');
+    const conv = channels.find((c) => c.id === data.id);
+    if (conv) openConversation(conv);
+    else render();
+  }
 
   function bindSearch() {
     const E = UI.els;
@@ -397,173 +406,100 @@ const APP = (function () {
     });
   }
 
-  // ---------- Composer ----------
-
   function bindComposer() {
     const E = UI.els;
     E.messageInput.addEventListener("input", UI.autoResizeTextarea);
     E.messageInput.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
-        const text = UI.getMessageInput();
-        onReply(text);
+        onReply(UI.getMessageInput());
       }
     });
-    E.btnSend.addEventListener("click", () => {
-      const text = UI.getMessageInput();
-      onReply(text);
-    });
+    E.btnSend.addEventListener("click", () => onReply(UI.getMessageInput()));
 
-    // Attach file (composer)
     E.btnAttach.addEventListener("click", () => {
       E.filePicker.value = "";
       E.filePicker.click();
     });
     E.filePicker.addEventListener("change", (e) => {
-      const files = Array.from(e.target.files || []);
-      if (!files.length) return;
-      files.forEach((f) => addFileAttachment(f, selectedConv));
+      Array.from(e.target.files || []).forEach((f) => addFileAttachment(f, selectedConv));
       E.filePicker.value = "";
     });
-
-    // Attach file (files panel)
     E.btnUploadFile.addEventListener("click", () => {
       E.filePickerPanel.value = "";
       E.filePickerPanel.click();
     });
     E.filePickerPanel.addEventListener("change", (e) => {
-      const files = Array.from(e.target.files || []);
-      if (!files.length) return;
-      files.forEach((f) => addFileAttachment(f, selectedConv));
+      Array.from(e.target.files || []).forEach((f) => addFileAttachment(f, selectedConv));
       E.filePickerPanel.value = "";
     });
-
-    // Emoji reaction picker (tiny mock)
-    E.btnEmoji.addEventListener("click", () => {
-      const emojis = ["👍", "❤️", "🔥", "🎉", "👀", "✅"];
-      const lastMsg = state.messages[state.messages.length - 1];
-      if (!lastMsg) {
-        UI.toast("No message to react to yet.");
-        return;
-      }
-      UI.showDialog({
-        title: "Add reaction",
-        message: "Pick an emoji to react to the latest message.",
-        confirmLabel: "React",
-        cancelLabel: "Cancel",
-        onConfirm: (emoji) => {
-          const e = (emoji || "").trim() || "👍";
-          onToggleReaction(lastMsg.id, e);
-        },
-      });
-      const input = document.getElementById("dialog-input");
-      if (input) {
-        input.value = "";
-        input.placeholder = "e.g. 🔥";
-        const list = document.createElement("div");
-        list.style.marginTop = "10px";
-        emojis.forEach((em) => {
-          const b = document.createElement("button");
-          b.type = "button";
-          b.textContent = em;
-          b.style.cssText = "background:#F3F4F6;border:1px solid var(--line);border-radius:8px;padding:6px 10px;cursor:pointer;margin-right:6px;font-size:1.1rem;";
-          b.addEventListener("click", () => {
-            input.value = em;
-          });
-          list.appendChild(b);
-        });
-        input.parentNode.insertBefore(list, input.nextSibling);
-      }
-    });
+    E.btnEmoji.addEventListener("click", () => UI.toast("Emoji-Reaktionen sind Demo."));
   }
 
   function addFileAttachment(file, conv) {
     if (!conv) {
-      UI.toast("Open a conversation to attach a file.");
+      UI.toast("Oeffne zuerst einen Kanal.");
       return;
     }
     const sizeBytes = file.size || 0;
-    const sizeText = sizeBytes > 1024 * 1024
-      ? (sizeBytes / (1024 * 1024)).toFixed(2) + " MB"
-      : (sizeBytes / 1024).toFixed(1) + " KB";
-    const type = file.name.split(".").pop().toLowerCase();
-    const mapped = type === "pdf" ? "pdf" : type === "fig" ? "fig" : type === "yaml" || type === "yml" ? "yaml" : "file";
-    const attachment = {
+    const sizeText =
+      sizeBytes > 1024 * 1024
+        ? (sizeBytes / (1024 * 1024)).toFixed(2) + " MB"
+        : (sizeBytes / 1024).toFixed(1) + " KB";
+    local.files.push({
       id: "f_" + Date.now(),
       name: file.name,
-      type: mapped,
+      type: "file",
       size: sizeText,
-      uploadedBy: CURRENT_USER_ID,
+      uploadedBy: currentUserId(),
       uploadedAt: new Date().toISOString(),
-      url: null, // simulated: no real storage
-      [conv.type === "channel" ? "channelId" : "dmId"]: conv.id,
-    };
-    state.files.push(attachment);
-    storage.save(state);
+      channelId: conv.id,
+    });
+    localStore.save(local);
     UI.renderFiles(getFilesForConv(conv), conv.id, conv.type);
-    UI.toast(`Attached ${file.name} (simulated upload)`);
+    UI.toast("Datei lokal angehaengt (Demo, nicht geteilt).");
   }
-
-  // ---------- Huddle (simulated phone call) ----------
 
   function bindGlobalActions() {
     const E = UI.els;
 
     E.btnBack.addEventListener("click", () => {
       selectedConv = null;
-      openThreadRoot = null;
+      teardownRealtime();
       render();
     });
 
-    E.btnCloseThread = document.getElementById("btn-close-thread");
-    if (E.btnCloseThread) {
-      E.btnCloseThread.addEventListener("click", closeThread);
-    }
-
-    E.btnCall.addEventListener("click", () => {
-      if (!selectedConv) {
-        UI.toast("Open a conversation first.");
-        return;
-      }
-      startHuddle(selectedConv.id);
-    });
-
+    E.btnCall.addEventListener("click", () => UI.toast("Anrufe sind nur Demo."));
     E.btnStartHuddle.addEventListener("click", () => {
       if (!selectedConv) return;
       startHuddle(selectedConv.id);
     });
-
     E.btnEndHuddle.addEventListener("click", () => {
       if (!selectedConv) return;
       endHuddle(selectedConv.id);
     });
-
     E.btnMute.addEventListener("click", () => {
       E.btnMute.classList.toggle("active");
-      E.btnMute.title = E.btnMute.classList.contains("active") ? "Unmute microphone" : "Mute microphone";
-      UI.toast(E.btnMute.classList.contains("active") ? "Microphone muted" : "Microphone unmuted");
+      UI.toast(E.btnMute.classList.contains("active") ? "Stumm (Demo)" : "Mikro an (Demo)");
     });
+    E.btnHuddleVideo.addEventListener("click", () => UI.toast("Kamera nicht verfuegbar (Demo)."));
 
-    E.btnHuddleVideo.addEventListener("click", () => {
-      UI.toast("Camera is not available in this simulated huddle.");
-    });
-
-    // Nav buttons (Sidebar + untere Mobile-Navigation teilen sich dieselben data-view-Werte)
     document.querySelectorAll(".nav-item[data-view]").forEach((btn) => {
       btn.addEventListener("click", () => {
         currentView = btn.dataset.view;
         selectedConv = null;
-        openThreadRoot = null;
+        teardownRealtime();
+        // restore empty state text for channels list
+        UI.els.listEmpty.innerHTML =
+          "<p>Noch keine Unterhaltungen. Erstelle einen Kanal oder oeffne allgemein.</p>";
         render();
         closeMobileNav();
       });
     });
 
-    // Mobile-Navigation: ausklappbarer Sidebar-Drawer
     const btnMenu = document.getElementById("btn-menu");
     const btnCloseNav = document.getElementById("btn-close-nav");
     const navOverlay = document.getElementById("nav-overlay");
-
     function openMobileNav() {
       UI.els.sidebar.classList.add("open");
       if (navOverlay) navOverlay.classList.add("open");
@@ -572,110 +508,84 @@ const APP = (function () {
       UI.els.sidebar.classList.remove("open");
       if (navOverlay) navOverlay.classList.remove("open");
     }
-
     if (btnMenu) btnMenu.addEventListener("click", openMobileNav);
     if (btnCloseNav) btnCloseNav.addEventListener("click", closeMobileNav);
     if (navOverlay) navOverlay.addEventListener("click", closeMobileNav);
-
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape") closeMobileNav();
     });
 
-    // Create channel / DM
     document.getElementById("btn-create-channel").addEventListener("click", () => {
       UI.showDialog({
-        title: "Create channel",
-        message: "Enter a name for the new channel.",
-        confirmLabel: "Create",
-        cancelLabel: "Cancel",
-        inputPlaceholder: "e.g. team-launch",
+        title: "Kanal erstellen",
+        message: "Name fuer den neuen Kanal.",
+        confirmLabel: "Erstellen",
+        cancelLabel: "Abbrechen",
+        inputPlaceholder: "z.B. projekt-x",
         onConfirm: (name) => createChannel(name, ""),
       });
     });
     document.getElementById("btn-create-dm").addEventListener("click", () => {
-      const others = state.users.filter((u) => u.id !== CURRENT_USER_ID);
-      if (others.length === 0) {
-        UI.toast("No other users available.");
-        return;
-      }
-      UI.showDialog({
-        title: "Start direct message",
-        message: "Choose a person to message.",
-        confirmLabel: "Start",
-        cancelLabel: "Cancel",
-        onConfirm: (userId) => createDM(userId),
-        inputPlaceholder: "User ID (e.g. u2, u3, u4, u5, u6)",
-      });
-      const input = document.getElementById("dialog-input");
-      if (input) {
-        input.value = "";
-        const list = document.createElement("div");
-        list.style.marginTop = "10px";
-        list.style.display = "flex";
-        list.style.flexDirection = "column";
-        list.style.gap = "6px";
-        others.forEach((u) => {
-          const b = document.createElement("button");
-          b.type = "button";
-          b.textContent = `${u.name} (${u.id})`;
-          b.style.cssText = "text-align:left;background:#F3F4F6;border:1px solid var(--line);border-radius:8px;padding:8px 12px;cursor:pointer;font-size:0.9rem;";
-          b.addEventListener("click", () => {
-            input.value = u.id;
-          });
-          list.appendChild(b);
-        });
-        input.parentNode.insertBefore(list, input.nextSibling);
-      }
+      UI.toast("Direktnachrichten kommen spaeter — nutze die Kanaele.");
     });
 
-    // Conv tab switching
     document.querySelectorAll(".conv-tab").forEach((tab) => {
       tab.addEventListener("click", () => {
         if (!selectedConv) return;
-        const t = tab.dataset.tab;
-        selectedConv._activeTab = t;
-        if (t === "huddle" && selectedConv.id) {
-          const huddle = state.huddles && state.huddles[selectedConv.id];
-          UI.setHuddleActive(!!huddle);
-          if (huddle) UI.renderHuddleParticipants(huddle.participants, state.users, CURRENT_USER_ID);
-        }
+        selectedConv._activeTab = tab.dataset.tab;
         render();
       });
     });
+
+    const btnUserMenu = document.getElementById("btn-user-menu");
+    if (btnUserMenu) {
+      btnUserMenu.addEventListener("click", () => {
+        UI.showDialog({
+          title: "Konto",
+          message: (profile && profile.display_name ? profile.display_name : "Angemeldet") + " — abmelden?",
+          confirmLabel: "Abmelden",
+          cancelLabel: "Abbrechen",
+          onConfirm: () => Auth.signOut(),
+        });
+      });
+    }
+
+    // Persist notes locally when typing
+    if (E.notesEditor) {
+      E.notesEditor.addEventListener("input", () => {
+        if (!selectedConv) return;
+        local.notes[selectedConv.id] = E.notesEditor.value;
+        localStore.save(local);
+      });
+    }
   }
 
   function startHuddle(convId) {
-    if (!state.huddles) state.huddles = {};
-    const conv = getConv(convId, "channel") || getConv(convId, "dm");
-    const participants = (conv && conv.members) || [CURRENT_USER_ID];
-    state.huddles[convId] = {
+    local.huddles = local.huddles || {};
+    local.huddles[convId] = {
       id: "huddle_" + Date.now(),
       convId,
-      startedBy: CURRENT_USER_ID,
+      startedBy: currentUserId(),
       startedAt: new Date().toISOString(),
-      participants,
+      participants: [currentUserId()],
       active: true,
     };
-    storage.save(state);
-    UI.toast("Huddle started (simulated audio)");
+    localStore.save(local);
+    UI.toast("Huddle gestartet (nur Demo, kein Audio).");
     render();
   }
 
   function endHuddle(convId) {
-    if (!state.huddles) return;
-    delete state.huddles[convId];
-    storage.save(state);
-    UI.toast("Huddle ended");
+    if (!local.huddles) return;
+    delete local.huddles[convId];
+    localStore.save(local);
+    UI.toast("Huddle beendet");
     render();
   }
-
-  // ---------- Public ----------
 
   return { init };
 })();
 
-// Initialise once the DOM is ready (script sits at end of <body>, so it may
-// already be ready by the time this runs).
 if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", () => APP.init());
 } else {
