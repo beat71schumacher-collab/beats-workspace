@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" aria-hidden="true">
+  <symbol id="icon-channel" viewBox="0 0 24 24"><path d="M8 8a2 2 0 1 1 4 0v3a2 2 0 1 1-4 0z" fill="#7B2CBF"/></symbol>
+  <symbol id="icon-message" viewBox="0 0 24 24"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z" fill="#7B2CBF"/></symbol>
+  <symbol id="icon-call" viewBox="0 0 24 24"><path d="M6.62 10.79c1.44-2.83 3.76-5.14 6.59-6.59l2.2-2.2c.27-.27.62-.39 1-.39s.73.13 1 .39l2.2 2.2c.27.27.39.62.39 1s-.13.73-.39 1l-2.2 2.2c-2.83 1.44-5.14 3.76-6.59 6.59l-2.2 2.2c-.27.27-.62.39-1 .39s-.73-.13-1-.39l-2.2-2.2c-.27-.27-.39-.62-.39-1s.13-.73.39-1zM16 17H4v-2h12v2zm3.41-8.58L18 14.17V16h-2v-3.17l-1.41-1.41c-.27-.27-.62-.39-1-.39s-.73.13-1 .39L9.59 13H8v-2h3.59l1.41-1.41c.27-.27.39-.62.39-1s-.13-.73-.39-1z" fill="#7B2CBF"/></symbol>
+  <symbol id="icon-file" viewBox="0 0 24 24"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6z" fill="#7B2CBF"/><path d="M14 4v4h4" fill="none" stroke="#7B2CBF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="icon-note" viewBox="0 0 24 24"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6z" fill="#E2E8F0"/><path d="M14 4v4h4M10 14h4v4M8 18h3v3" fill="none" stroke="#7B2CBF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+</svg>

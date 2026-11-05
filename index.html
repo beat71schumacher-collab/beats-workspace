@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#7B2CBF">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Beats Workspace">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <title>Beats Workspace</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="assets/logo.svg">
+  <link rel="icon" sizes="192x192" href="assets/icon-192.svg">
+  <link rel="icon" sizes="512x512" href="assets/icon-512.svg">
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="css/components.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Ueberlagerung hinter dem geöffneten Drawer (Mobile) -->
+    <div class="nav-overlay" id="nav-overlay"></div>
+
+    <!-- Sidebar / Navigation (Desktop: feststehend, Mobile: ausklappbarer Drawer) -->
+    <aside class="sidebar" aria-label="Main navigation">
+      <button class="btn-close-nav" id="btn-close-nav" title="Navigation schliessen">&#10006;</button>
+      <div class="brand">
+        <img class="brand-icon" src="assets/logo.svg" alt="Beats Workspace logo">
+        <span class="brand-name">Beats Workspace</span>
+      </div>
+
+      <nav class="nav-section" aria-label="Workspace">
+        <h2 class="nav-title">Workspace</h2>
+        <button class="nav-item active" data-view="home" aria-pressed="true" title="Home">
+          <span class="nav-icon">&#9632;</span>
+          <span class="nav-label">Home</span>
+        </button>
+        <button class="nav-item" data-view="channels" aria-pressed="false" title="Channels">
+          <span class="nav-icon">&#128202;</span>
+          <span class="nav-label">Kanäle</span>
+        </button>
+        <button class="nav-item" data-view="messages" aria-pressed="false" title="Direct Messages">
+          <span class="nav-icon">&#128100;</span>
+          <span class="nav-label">Nachrichten</span>
+        </button>
+        <button class="nav-item" data-view="calls" aria-pressed="false" title="Calls / Huddles">
+          <span class="nav-icon">&#9742;</span>
+          <span class="nav-label">Anrufe</span>
+        </button>
+        <button class="nav-item" data-view="files" aria-pressed="false" title="Files">
+          <span class="nav-icon">&#128196;</span>
+          <span class="nav-label">Dateien</span>
+        </button>
+        <button class="nav-item" data-view="notes" aria-pressed="false" title="Notes">
+          <span class="nav-icon">&#128221;</span>
+          <span class="nav-label">Notizen</span>
+        </button>
+      </nav>
+
+      <div class="nav-section create-section">
+        <h2 class="nav-title">Erstellen</h2>
+        <button class="nav-item icon-button" id="btn-create-channel" title="Create channel">
+          <span class="nav-icon">&#10140;</span>
+          <span class="nav-label">Kanal erstellen</span>
+        </button>
+        <button class="nav-item icon-button" id="btn-create-dm" title="Start direct message">
+          <span class="nav-icon">&#128101;</span>
+          <span class="nav-label">Neue Nachricht</span>
+        </button>
+      </div>
+
+      <div class="user-profile" id="user-profile">
+        <img class="avatar" id="profile-avatar" src="" alt="">
+        <div class="profile-info">
+          <div class="profile-name" id="profile-name">Alex Rivera</div>
+          <div class="profile-status" id="profile-status">Online</div>
+        </div>
+        <button class="icon-button" id="btn-user-menu" title="Account settings">&#9776;</button>
+      </div>
+      <div class="nav-section demo-notice">
+        <div class="mock-label" style="font-size:0.66rem;padding:6px 10px;line-height:1.35;text-align:center;">
+          DEMO – LOKALER PROTOTYP<br>
+          Anrufe, Dateien und Notizen sind simuliert und nur in diesem Browser gespeichert.
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main content area -->
+    <main class="main">
+      <!-- Top bar -->
+      <header class="topbar">
+        <button class="icon-button btn-menu" id="btn-menu" title="Menü">&#9776;</button>
+        <div class="search-box" id="top-search">
+          <span class="search-icon">&#128269;</span>
+          <input type="text" id="search-input" placeholder="Suchen..." aria-label="Search">
+          <button class="icon-button" id="btn-clear-search" aria-hidden="true">&#10006;</button>
+        </div>
+        <div class="topbar-actions">
+          <button class="icon-button" id="btn-notifications" title="Mitteilungen">&#128227;</button>
+          <button class="icon-button" id="btn-help" title="Hilfe">&#10067;</button>
+        </div>
+      </header>
+
+      <!-- List view (channels / messages) -->
+      <section class="list-view" id="list-view" aria-label="Conversation list">
+        <div class="list-header">
+          <h1 id="list-title">Kanäle</h1>
+        </div>
+        <ul class="list-items" id="list-items"></ul>
+        <div class="empty-state" id="list-empty" style="display:none;">
+          <p>Noch keine Unterhaltungen. Erstelle einen Kanal oder schreibe eine Nachricht.</p>
+        </div>
+      </section>
+
+      <!-- Conversation view -->
+      <section class="conversation-view" id="conversation-view" style="display:none;" aria-label="Conversation">
+        <header class="conv-header">
+          <button class="icon-button" id="btn-back" aria-label="Back to list">&#9664;</button>
+          <div class="conv-identity">
+            <img class="avatar conv-avatar" id="conv-avatar" src="" alt="">
+            <div class="conv-meta">
+              <h2 id="conv-title">Conversation</h2>
+              <p id="conv-subtitle" class="conv-subtitle">2 members &bull; Active</p>
+            </div>
+          </div>
+          <div class="conv-tabs" role="tablist" aria-label="Conversation tabs">
+            <button class="conv-tab active" data-tab="chat" role="tab" aria-selected="true">Chat</button>
+            <button class="conv-tab" data-tab="files" role="tab" aria-selected="false">Dateien</button>
+            <button class="conv-tab" data-tab="notes" role="tab" aria-selected="false">Notizen</button>
+            <button class="conv-tab" data-tab="huddle" role="tab" aria-selected="false">Anruf</button>
+          </div>
+          <button class="icon-button" id="btn-call" title="Start call">&#9742;</button>
+        </header>
+
+        <div class="conv-body">
+          <!-- Chat panel -->
+          <div class="conv-panel chat-panel active" id="panel-chat" data-panel="chat">
+            <div class="messages" id="messages"></div>
+            <div class="thread-banner" id="thread-banner" style="display:none;">
+              <span class="thread-label">Thread</span>
+              <button class="icon-button" id="btn-close-thread" aria-label="Close thread">&#10006;</button>
+            </div>
+            <div class="composer">
+              <div class="composer-actions">
+                <button class="icon-button" id="btn-attach" title="Attach file">&#128206;</button>
+                <button class="icon-button" id="btn-emoji" title="Add reaction">&#127874;</button>
+                <button class="icon-button" id="btn-format" title="Format">&#128218;</button>
+              </div>
+              <div class="composer-input-wrap">
+                <textarea id="message-input" rows="1" placeholder="Nachricht schreiben..." aria-label="Message input"></textarea>
+              </div>
+              <button class="send-button" id="btn-send" aria-label="Send message">&#10003;</button>
+              <input type="file" id="file-picker" multiple accept="image/*,.pdf,.doc,.docx,.txt,.zip" style="display:none;">
+            </div>
+          </div>
+
+          <!-- Files panel -->
+          <div class="conv-panel files-panel" id="panel-files" data-panel="files" style="display:none;">
+            <div class="files-header">
+              <h3>Files in <span id="files-context-name"></span></h3>
+              <button class="icon-button" id="btn-upload-file" title="Upload file">&#128206;</button>
+            </div>
+            <div class="files-list" id="files-list"></div>
+            <input type="file" id="file-picker-panel" multiple style="display:none;">
+          </div>
+
+          <!-- Notes panel -->
+          <div class="conv-panel notes-panel" id="panel-notes" data-panel="notes" style="display:none;">
+            <div class="notes-header">
+              <h3>Notes</h3>
+            </div>
+            <div class="notes-editor-wrap">
+              <textarea id="notes-editor" placeholder="Gemeinsame Notizen..."></textarea>
+            </div>
+            <div class="notes-footer">
+              <span class="mock-label">MOCKED: Notes are stored locally in your browser.</span>
+            </div>
+          </div>
+
+          <!-- Huddle panel -->
+          <div class="conv-panel huddle-panel" id="panel-huddle" data-panel="huddle" style="display:none;">
+            <div class="huddle-empty">
+              <svg class="huddle-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="12" cy="12" r="10" fill="#e2e8f0"/>
+                <path d="M12 6a6 6 0 1 1 6 6v0a6 6 0 1 1-6-6z" fill="#cbd5e1"/>
+                <path d="M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6z" fill="#94a3b8"/>
+              </svg>
+              <h3>No active huddle</h3>
+              <p>Start an audio huddle with teammates.</p>
+              <button class="primary-button" id="btn-start-huddle">Start Huddle</button>
+            </div>
+            <div class="huddle-active" id="huddle-active" style="display:none;">
+              <div class="huddle-status">
+                <span class="pulse"></span>
+                <span id="huddle-status-text">Huddle active</span>
+              </div>
+              <div class="huddle-participants" id="huddle-participants"></div>
+              <div class="huddle-controls">
+                <button class="icon-button danger" id="btn-mute" title="Mute microphone">&#128263;</button>
+                <button class="icon-button" id="btn-huddle-video" title="Camera">&#128264;</button>
+                <button class="icon-button danger" id="btn-end-huddle" title="End huddle">&#10008;</button>
+              </div>
+              <div class="mock-label">SIMULATED: Huddle is a UI prototype. No real audio/video is transmitted.</div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Mobile: Untere Navigation (Home, Kanäle, Nachrichten, Anrufe, Notizen) -->
+    <nav class="bottom-nav" id="bottom-nav" aria-label="Schnellnavigation">
+      <button class="bottom-nav-item nav-item active" data-view="home" aria-pressed="true" title="Home">
+        <span class="nav-icon">&#127968;</span>
+        <span class="bottom-label">Home</span>
+      </button>
+      <button class="bottom-nav-item nav-item" data-view="channels" aria-pressed="false" title="Kanäle">
+        <span class="nav-icon">&#128202;</span>
+        <span class="bottom-label">Kanäle</span>
+      </button>
+      <button class="bottom-nav-item nav-item" data-view="messages" aria-pressed="false" title="Nachrichten">
+        <span class="nav-icon">&#128100;</span>
+        <span class="bottom-label">Nachrichten</span>
+      </button>
+      <button class="bottom-nav-item nav-item" data-view="calls" aria-pressed="false" title="Anrufe">
+        <span class="nav-icon">&#9742;</span>
+        <span class="bottom-label">Anrufe</span>
+      </button>
+      <button class="bottom-nav-item nav-item" data-view="notes" aria-pressed="false" title="Notizen">
+        <span class="nav-icon">&#128221;</span>
+        <span class="bottom-label">Notizen</span>
+      </button>
+    </nav>
+  </div>
+
+  <script src="js/data.js"></script>
+  <script src="js/storage.js"></script>
+  <script src="js/ui.js"></script>
+  <script src="js/app.js"></script>
+
+  <script>
+    // Service Worker registrieren (PWA-Offline-Cache).
+    // Der Pfad ist relativ, daher funktioniert die Registrierung von jedem
+    // Webserver oder Unterordner aus.
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker
+        .register("./sw.js")
+        .then((registration) => {
+          console.log("Beats Workspace: Service Worker registriert", registration.scope);
+        })
+        .catch((error) => {
+          console.warn("Beats Workspace: Service Worker-Registrierung fehlgeschlagen:", error);
+        });
+    }
+  </script>
+</body>
+</html>

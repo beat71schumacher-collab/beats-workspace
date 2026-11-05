@@ -1,0 +1,22 @@
+{
+  "name": "Beats Workspace",
+  "short_name": "Beats",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "theme_color": "#7B2CBF",
+  "background_color": "#F8FAFC",
+  "description": "Beats Workspace — lokaler Chat- und Arbeitsbereich-Prototyp. Kanäle, Direktnachrichten, Dateien, Notizen und simulierte Huddles, lokal im Browser gespeichert und offline nutzbar.",
+  "icons": [
+    {
+      "src": "assets/icon-192.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml"
+    },
+    {
+      "src": "assets/icon-512.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml"
+    }
+  ]
+}
