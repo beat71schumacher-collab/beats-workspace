@@ -1,5 +1,5 @@
 /* Beats Workspace — Service Worker (app shell only; never cache Supabase). */
-const CACHE_NAME = "beats-workspace-v4";
+const CACHE_NAME = "beats-workspace-v5";
 
 const APP_SHELL = [
   "./",
@@ -13,6 +13,7 @@ const APP_SHELL = [
   "./js/ui.js",
   "./js/auth.js",
   "./js/calls.js",
+  "./js/files-api.js",
   "./js/app.js",
   "./assets/logo.svg",
   "./assets/icons.svg",

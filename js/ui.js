@@ -238,7 +238,42 @@ const UI = (function () {
 
   // ---------- Messages ----------
 
-  function renderMessages(messages, users, currentUserId, onReply, onToggleReaction, onOpenThread) {
+  function fileAttachmentHtml(file) {
+    if (!file) return "";
+    const size = file.sizeLabel || "";
+    if (file.previewUrl) {
+      return `<div class="msg-file" data-file-id="${escapeHtml(file.id || "")}">
+        <img src="${escapeHtml(file.previewUrl)}" alt="${escapeHtml(file.name || "Bild")}" loading="lazy">
+        <div class="msg-file-row">
+          <div class="msg-file-icon">🖼️</div>
+          <div>
+            <div class="msg-file-name">${escapeHtml(file.name || "Bild")}</div>
+            <div class="msg-file-meta">${escapeHtml(size)}</div>
+          </div>
+        </div>
+      </div>`;
+    }
+    return `<div class="msg-file" data-file-id="${escapeHtml(file.id || "")}">
+      <div class="msg-file-row">
+        <div class="msg-file-icon">📎</div>
+        <div>
+          <div class="msg-file-name">${escapeHtml(file.name || "Datei")}</div>
+          <div class="msg-file-meta">${escapeHtml(size)}</div>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  function wireFileClick(root, msg, onOpenFile) {
+    const el = root.querySelector(".msg-file");
+    if (!el || !onOpenFile || !msg.file) return;
+    el.addEventListener("click", (e) => {
+      e.stopPropagation();
+      onOpenFile(msg.file);
+    });
+  }
+
+  function renderMessages(messages, users, currentUserId, onReply, onToggleReaction, onOpenThread, onOpenFile) {
     els.messages.innerHTML = "";
     messages.forEach((msg) => {
       const author = users.find((u) => u.id === msg.authorId);
@@ -265,6 +300,10 @@ const UI = (function () {
         ? `<img class="msg-avatar-img" src="${avatarFor(author)}" alt="">`
         : `<img class="msg-avatar-img" src="${avatarPlaceholder("#94A3B8")}" alt="">`;
 
+      const bodyText = msg.file && (!msg.text || msg.text === msg.file.name)
+        ? ""
+        : `<div class="msg-body">${escapeHtml(msg.text || "")}</div>`;
+
       msgEl.innerHTML = `
         ${avatarImg}
         <div class="msg-content">
@@ -273,7 +312,8 @@ const UI = (function () {
             <span class="msg-time">${formatTime(msg.createdAt)}</span>
             ${threadLink}
           </div>
-          <div class="msg-body">${escapeHtml(msg.text)}</div>
+          ${bodyText}
+          ${fileAttachmentHtml(msg.file)}
           <div class="msg-reactions">${reactionsHtml}</div>
         </div>
       `;
@@ -290,7 +330,8 @@ const UI = (function () {
         onOpenThread(msg);
       });
 
-      // Clicking a message opens its thread
+      wireFileClick(msgEl, msg, onOpenFile);
+
       msgEl.addEventListener("click", () => {
         if (msg.replyCount > 0) onOpenThread(msg);
       });
@@ -306,7 +347,7 @@ const UI = (function () {
     });
   }
 
-  function appendMessage(msg, users, currentUserId, onToggleReaction, onOpenThread) {
+  function appendMessage(msg, users, currentUserId, onToggleReaction, onOpenThread, onOpenFile) {
     const author = users.find((u) => u.id === msg.authorId);
     const isMe = msg.authorId === currentUserId;
     const msgEl = document.createElement("div");
@@ -327,6 +368,10 @@ const UI = (function () {
       ? `<img class="msg-avatar-img" src="${avatarFor(author)}" alt="">`
       : `<img class="msg-avatar-img" src="${avatarPlaceholder("#94A3B8")}" alt="">`;
 
+    const bodyText = msg.file && (!msg.text || msg.text === msg.file.name)
+      ? ""
+      : `<div class="msg-body">${escapeHtml(msg.text || "")}</div>`;
+
     msgEl.innerHTML = `
       ${avatarImg}
       <div class="msg-content">
@@ -334,7 +379,8 @@ const UI = (function () {
           <span class="msg-author">${escapeHtml(author ? author.name : "Unbekannt")}</span>
           <span class="msg-time">${formatTime(msg.createdAt)}</span>
         </div>
-        <div class="msg-body">${escapeHtml(msg.text)}</div>
+        ${bodyText}
+        ${fileAttachmentHtml(msg.file)}
         <div class="msg-reactions">${reactionsHtml}</div>
       </div>
     `;
@@ -345,6 +391,7 @@ const UI = (function () {
         onToggleReaction(msg.id, btn.dataset.emoji);
       });
     });
+    wireFileClick(msgEl, msg, onOpenFile);
 
     els.messages.appendChild(msgEl);
     scrollToBottom();
@@ -364,29 +411,43 @@ const UI = (function () {
 
   // ---------- Files ----------
 
-  function renderFiles(files, convId, convType) {
+  function renderFiles(files, convId, convType, opts) {
+    const { currentUserId, onOpen, onDelete } = opts || {};
     els.filesList.innerHTML = "";
-    const convFiles = files.filter(
-      (f) => (convType === "channel" ? f.channelId === convId : f.dmId === convId)
-    );
+    const convFiles = (files || []).filter((f) => {
+      if (!convId) return true;
+      return f.channelId === convId || f.channel_id === convId;
+    });
     if (convFiles.length === 0) {
       els.filesList.innerHTML = `
         <div class="empty-panel">
-          <div class="mock-label">No files shared yet.</div>
-          <p style="color:var(--muted);font-size:0.86rem;">Attach files from the composer to share them here.</p>
+          <div class="mock-label">Noch keine Dateien.</div>
+          <p style="color:var(--muted);font-size:0.86rem;">Hänge Dateien über die Büroklammer an.</p>
         </div>`;
       return;
     }
-    els.filesContextName.textContent = convId;
+    if (els.filesContextName) els.filesContextName.textContent = "Kanal";
     convFiles.forEach((f) => {
       const card = document.createElement("div");
       card.className = "file-card";
-      const icon = f.type === "pdf" ? "📄" : f.type === "fig" ? "🎨" : f.type === "yaml" ? "📜" : "📎";
+      const mine = currentUserId && (f.uploaderId === currentUserId || f.uploader_id === currentUserId);
+      const thumb = f.previewUrl
+        ? `<img class="file-thumb" src="${escapeHtml(f.previewUrl)}" alt="">`
+        : `<div class="file-icon">📎</div>`;
       card.innerHTML = `
-        <div class="file-icon">${icon}</div>
-        <div class="file-name" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</div>
-        <div class="file-meta">${escapeHtml(f.size)} • ${escapeHtml(formatRelative(f.uploadedAt))}</div>
+        ${thumb}
+        <div class="file-body">
+          <div class="file-name" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</div>
+          <div class="file-meta">${escapeHtml(f.sizeLabel || "")} • ${escapeHtml(formatRelative(f.createdAt || f.created_at || f.uploadedAt))}</div>
+        </div>
+        <div class="file-actions">
+          <button type="button" data-act="open">Öffnen</button>
+          ${mine ? '<button type="button" class="danger" data-act="del">Löschen</button>' : ""}
+        </div>
       `;
+      card.querySelector('[data-act="open"]').addEventListener("click", () => onOpen && onOpen(f));
+      const del = card.querySelector('[data-act="del"]');
+      if (del) del.addEventListener("click", () => onDelete && onDelete(f));
       els.filesList.appendChild(card);
     });
   }

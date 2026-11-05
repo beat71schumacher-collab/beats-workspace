@@ -1,6 +1,6 @@
 /* ==========================================================================
    Beats Workspace — Multi-user app (Supabase Auth + Realtime channels)
-   Files / notes remain local demos. Calls are real WebRTC.
+   Notes remain local demos. Chat, calls and files use Supabase.
    ========================================================================== */
 
 const APP = (function () {
@@ -17,6 +17,9 @@ const APP = (function () {
   let searchTerm = "";
   let realtimeChannel = null;
   let messageIds = new Set();
+  let channelFiles = [];
+  let allFiles = [];
+  let filesRealtime = null;
 
   async function init() {
     if (!window.supabase || !window.supabase.createClient) {
@@ -38,8 +41,11 @@ const APP = (function () {
     session = next;
     if (!session) {
       teardownRealtime();
+      teardownFilesRealtime();
       if (window.Calls) Calls.teardown().catch(() => {});
       profile = null;
+      channelFiles = [];
+      allFiles = [];
       profiles = [];
       channels = [];
       messages = [];
@@ -50,6 +56,8 @@ const APP = (function () {
     await loadProfiles();
     await loadChannels();
     await initCalls();
+    if (window.FilesApi) FilesApi.init(sb);
+    subscribeFilesRealtime();
     render();
   }
 
@@ -156,21 +164,54 @@ const APP = (function () {
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "messages", filter: "channel_id=eq." + channelId },
-        (payload) => {
+        async (payload) => {
           const row = payload.new;
           if (!row || messageIds.has(row.id)) return;
-          const msg = mapMessage(row);
+          let msg = mapMessage(row);
+          if (row.file_id) {
+            try {
+              const { data: f } = await sb.from("files").select("*").eq("id", row.file_id).maybeSingle();
+              msg.file = mapFileRow(f);
+              if (msg.file && FilesApi.isImage(msg.file.mime, msg.file.name)) {
+                msg.file.previewUrl = await FilesApi.signedUrl(msg.file.path, 3600);
+              }
+            } catch (_) {}
+          }
+          if (messageIds.has(msg.id)) return;
           messageIds.add(msg.id);
           messages.push(msg);
           if (selectedConv && selectedConv.id === channelId) {
-            UI.appendMessage(msg, usersForUi(), currentUserId(), onToggleReaction, onOpenThread);
+            UI.appendMessage(msg, usersForUi(), currentUserId(), onToggleReaction, onOpenThread, openSharedFile);
+          }
+          if (msg.file) {
+            loadChannelFiles(channelId).catch(() => {});
           }
         }
       )
       .subscribe();
   }
 
+  function mapFileRow(f) {
+    if (!f) return null;
+    return {
+      id: f.id,
+      channelId: f.channel_id,
+      channel_id: f.channel_id,
+      uploaderId: f.uploader_id,
+      uploader_id: f.uploader_id,
+      name: f.name,
+      size: f.size,
+      sizeLabel: FilesApi.formatSize(f.size),
+      mime: f.mime,
+      path: f.path,
+      createdAt: f.created_at,
+      created_at: f.created_at,
+      previewUrl: f.previewUrl || null,
+    };
+  }
+
   function mapMessage(row) {
+    const fileRow = row.file || (row.files && !Array.isArray(row.files) ? row.files : null);
     return {
       id: row.id,
       text: row.body,
@@ -178,16 +219,32 @@ const APP = (function () {
       authorId: row.author_id,
       channelId: row.channel_id,
       createdAt: row.created_at,
+      fileId: row.file_id,
+      file: mapFileRow(fileRow),
       reactions: [],
       replyCount: 0,
       threadRootId: null,
     };
   }
 
+  async function enrichFilePreviews(fileList) {
+    const out = [];
+    for (const f of fileList || []) {
+      const mapped = mapFileRow(f);
+      if (mapped && FilesApi.isImage(mapped.mime, mapped.name) && mapped.path) {
+        try {
+          mapped.previewUrl = await FilesApi.signedUrl(mapped.path, 3600);
+        } catch (_) {}
+      }
+      out.push(mapped);
+    }
+    return out;
+  }
+
   async function loadMessages(channelId) {
     const { data, error } = await sb
       .from("messages")
-      .select("*")
+      .select("*, file:files(*)")
       .eq("channel_id", channelId)
       .order("created_at", { ascending: true })
       .limit(200);
@@ -197,7 +254,56 @@ const APP = (function () {
       return;
     }
     messages = (data || []).map(mapMessage);
+    for (const m of messages) {
+      if (m.file && FilesApi.isImage(m.file.mime, m.file.name) && m.file.path && !m.file.previewUrl) {
+        try {
+          m.file.previewUrl = await FilesApi.signedUrl(m.file.path, 3600);
+        } catch (_) {}
+      }
+    }
     messageIds = new Set(messages.map((m) => m.id));
+  }
+
+  async function loadChannelFiles(channelId) {
+    try {
+      const rows = await FilesApi.listForChannel(channelId);
+      channelFiles = await enrichFilePreviews(rows);
+    } catch (e) {
+      console.warn(e);
+      channelFiles = [];
+    }
+  }
+
+  async function loadAllFiles() {
+    try {
+      const rows = await FilesApi.listAll();
+      allFiles = await enrichFilePreviews(rows);
+    } catch (e) {
+      console.warn(e);
+      allFiles = [];
+      UI.toast("Dateien konnten nicht geladen werden.");
+    }
+  }
+
+  function subscribeFilesRealtime() {
+    teardownFilesRealtime();
+    if (!sb) return;
+    filesRealtime = sb
+      .channel("files-meta")
+      .on("postgres_changes", { event: "*", schema: "public", table: "files" }, () => {
+        if (selectedConv) loadChannelFiles(selectedConv.id).then(() => {
+          if (selectedConv && (selectedConv._activeTab === "files" || currentView === "files")) render();
+        });
+        if (currentView === "files") loadAllFiles().then(() => render());
+      })
+      .subscribe();
+  }
+
+  function teardownFilesRealtime() {
+    if (filesRealtime && sb) {
+      try { sb.removeChannel(filesRealtime); } catch (_) {}
+    }
+    filesRealtime = null;
   }
 
   // ---------- Rendering ----------
@@ -234,7 +340,8 @@ const APP = (function () {
       loadProfiles().then(() => renderCallsList());
       return; // renderCallsList paints list; avoid double paint below for calls
     } else if (currentView === "files") {
-      renderFilesList();
+      loadAllFiles().then(() => renderFilesList());
+      return;
     } else if (currentView === "notes") {
       renderNotesList();
     }
@@ -245,10 +352,14 @@ const APP = (function () {
       UI.renderConvHeader(selectedConv, users);
       const tab = selectedConv._activeTab || "chat";
       UI.setConvTabs(tab);
-      UI.renderMessages(messages, users, uid, onReply, onToggleReaction, onOpenThread);
+      UI.renderMessages(messages, users, uid, onReply, onToggleReaction, onOpenThread, openSharedFile);
       UI.showThreadBanner(false, selectedConv.name);
       UI.setThreadTypingPlaceholder("Nachricht schreiben...");
-      UI.renderFiles(getFilesForConv(selectedConv), selectedConv.id, selectedConv.type);
+      UI.renderFiles(channelFiles, selectedConv.id, selectedConv.type, {
+        currentUserId: uid,
+        onOpen: openSharedFile,
+        onDelete: deleteSharedFile,
+      });
       UI.renderNotes(selectedConv.id, local.notes);
       UI.setComposerEnabled(true);
       const huddle = local.huddles && local.huddles[selectedConv.id];
@@ -327,23 +438,43 @@ const APP = (function () {
     const E = UI.els;
     E.listView.style.display = "flex";
     E.convView.style.display = "none";
-    E.listTitle.textContent = "Dateien (Demo)";
-    const files = [...local.files].sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
+    E.listTitle.textContent = "Dateien";
+    const uid = currentUserId();
     E.listItems.innerHTML = "";
-    if (files.length === 0) {
+    if (!allFiles.length) {
       E.listEmpty.style.display = "block";
-      E.listEmpty.innerHTML = "<p>Keine lokalen Demo-Dateien. Uploads bleiben nur auf diesem Geraet.</p>";
+      E.listEmpty.innerHTML = "<p>Noch keine geteilten Dateien. Öffne einen Kanal und hänge etwas an.</p>";
       E.listItems.style.display = "none";
       return;
     }
     E.listEmpty.style.display = "none";
     E.listItems.style.display = "block";
-    files.forEach((f) => {
+    allFiles.forEach((f) => {
       const li = document.createElement("li");
       li.className = "list-item";
-      li.innerHTML = `<div class="item-avatar">📎</div><div class="item-body"><div class="item-name">${UI.escapeHtml(
-        f.name
-      )}</div><div class="item-sub">Nur lokal • ${UI.formatRelative(f.uploadedAt)}</div></div>`;
+      const ch = channels.find((c) => c.id === f.channelId);
+      const mine = f.uploaderId === uid;
+      li.innerHTML = `
+        <div class="item-avatar">${f.previewUrl ? "🖼️" : "📎"}</div>
+        <div class="item-body">
+          <div class="item-name">${UI.escapeHtml(f.name)}</div>
+          <div class="item-sub">#${UI.escapeHtml(ch ? ch.name : "kanal")} • ${UI.escapeHtml(f.sizeLabel || "")} • ${UI.formatRelative(f.createdAt)}</div>
+        </div>
+        <div class="call-user-actions">
+          <button type="button" data-act="open">Öffnen</button>
+          ${mine ? '<button type="button" data-act="del">Löschen</button>' : ""}
+        </div>`;
+      li.querySelector('[data-act="open"]').addEventListener("click", (e) => {
+        e.stopPropagation();
+        openSharedFile(f);
+      });
+      const del = li.querySelector('[data-act="del"]');
+      if (del) {
+        del.addEventListener("click", (e) => {
+          e.stopPropagation();
+          deleteSharedFile(f);
+        });
+      }
       E.listItems.appendChild(li);
     });
   }
@@ -377,15 +508,12 @@ const APP = (function () {
     });
   }
 
-  function getFilesForConv(conv) {
-    return local.files.filter((f) => f.channelId === conv.id);
-  }
-
   async function openConversation(conv) {
     selectedConv = conv;
     openThreadRoot = null;
     conv._activeTab = conv._activeTab || "chat";
     await loadMessages(conv.id);
+    await loadChannelFiles(conv.id);
     subscribeChannel(conv.id);
     render();
   }
@@ -410,7 +538,7 @@ const APP = (function () {
       const msg = mapMessage(data);
       messageIds.add(msg.id);
       messages.push(msg);
-      UI.appendMessage(msg, usersForUi(), currentUserId(), onToggleReaction, onOpenThread);
+      UI.appendMessage(msg, usersForUi(), currentUserId(), onToggleReaction, onOpenThread, openSharedFile);
     }
   }
 
@@ -484,30 +612,94 @@ const APP = (function () {
     E.btnEmoji.addEventListener("click", () => UI.toast("Emoji-Reaktionen sind Demo."));
   }
 
-  function addFileAttachment(file, conv) {
-    if (!conv) {
-      UI.toast("Oeffne zuerst einen Kanal.");
-      return;
-    }
-    const sizeBytes = file.size || 0;
-    const sizeText =
-      sizeBytes > 1024 * 1024
-        ? (sizeBytes / (1024 * 1024)).toFixed(2) + " MB"
-        : (sizeBytes / 1024).toFixed(1) + " KB";
-    local.files.push({
-      id: "f_" + Date.now(),
-      name: file.name,
-      type: "file",
-      size: sizeText,
-      uploadedBy: currentUserId(),
-      uploadedAt: new Date().toISOString(),
-      channelId: conv.id,
-    });
-    localStore.save(local);
-    UI.renderFiles(getFilesForConv(conv), conv.id, conv.type);
-    UI.toast("Datei lokal angehaengt (Demo, nicht geteilt).");
+  function showUpload(show, text) {
+    const el = document.getElementById("upload-overlay");
+    const label = document.getElementById("upload-overlay-text");
+    if (!el) return;
+    el.style.display = show ? "flex" : "none";
+    if (label && text) label.textContent = text;
   }
 
+  async function openSharedFile(file) {
+    if (!file || !file.path) return;
+    try {
+      showUpload(true, "Link wird erstellt…");
+      const url = await FilesApi.signedUrl(file.path, 120);
+      showUpload(false);
+      window.open(url, "_blank", "noopener");
+    } catch (e) {
+      showUpload(false);
+      UI.toast(e.message || "Datei konnte nicht geöffnet werden.");
+    }
+  }
+
+  async function deleteSharedFile(file) {
+    if (!file) return;
+    if (!confirm('Datei "' + (file.name || "") + '" wirklich löschen?')) return;
+    try {
+      showUpload(true, "Datei wird gelöscht…");
+      await FilesApi.remove(file);
+      channelFiles = channelFiles.filter((f) => f.id !== file.id);
+      allFiles = allFiles.filter((f) => f.id !== file.id);
+      showUpload(false);
+      UI.toast("Datei gelöscht");
+      render();
+    } catch (e) {
+      showUpload(false);
+      UI.toast(e.message || "Löschen fehlgeschlagen (nur eigene Dateien).");
+    }
+  }
+
+  async function addFileAttachment(file, conv) {
+    if (!conv || conv.type !== "channel") {
+      UI.toast("Öffne zuerst einen Kanal, um Dateien zu teilen.");
+      return;
+    }
+    if (!file) return;
+    if (file.size > FilesApi.MAX_BYTES) {
+      UI.toast("Datei zu gross (max. 25 MB).");
+      return;
+    }
+    try {
+      showUpload(true, "Datei wird hochgeladen…");
+      const meta = await FilesApi.upload(file, {
+        channelId: conv.id,
+        userId: currentUserId(),
+      });
+      const { data: msgRow, error } = await sb
+        .from("messages")
+        .insert({
+          channel_id: conv.id,
+          author_id: currentUserId(),
+          body: file.name,
+          file_id: meta.id,
+        })
+        .select("*, file:files(*)")
+        .single();
+      if (error) throw error;
+      let msg = mapMessage(msgRow);
+      if (msg.file && FilesApi.isImage(msg.file.mime, msg.file.name)) {
+        try {
+          msg.file.previewUrl = await FilesApi.signedUrl(msg.file.path, 3600);
+        } catch (_) {}
+      }
+      if (!messageIds.has(msg.id)) {
+        messageIds.add(msg.id);
+        messages.push(msg);
+        UI.appendMessage(msg, usersForUi(), currentUserId(), onToggleReaction, onOpenThread, openSharedFile);
+      }
+      await loadChannelFiles(conv.id);
+      showUpload(false);
+      UI.toast("Datei geteilt");
+      render();
+    } catch (e) {
+      console.warn(e);
+      showUpload(false);
+      UI.toast(e.message || "Upload fehlgeschlagen.");
+    }
+  }
+
+  // ----------
   function bindGlobalActions() {
     const E = UI.els;
 
