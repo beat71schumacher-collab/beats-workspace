@@ -362,6 +362,15 @@ const APP = (function () {
       });
       UI.renderNotes(selectedConv.id, local.notes);
       UI.setComposerEnabled(true);
+      const delBtn = document.getElementById("btn-delete-channel");
+      if (delBtn) {
+        const canDel =
+          selectedConv.type === "channel" &&
+          selectedConv.createdBy === uid &&
+          selectedConv.name !== "allgemein" &&
+          selectedConv.name !== "random";
+        delBtn.style.display = canDel ? "" : "none";
+      }
       const huddle = local.huddles && local.huddles[selectedConv.id];
       UI.setHuddleActive(!!huddle);
       if (huddle) {
@@ -370,6 +379,8 @@ const APP = (function () {
       }
     } else {
       E.convView.style.display = "none";
+      const delBtn = document.getElementById("btn-delete-channel");
+      if (delBtn) delBtn.style.display = "none";
     }
   }
 
@@ -569,6 +580,33 @@ const APP = (function () {
     else render();
   }
 
+  async function deleteChannel(conv) {
+    if (!conv || conv.type !== "channel") return;
+    if (conv.createdBy !== currentUserId()) {
+      UI.toast("Nur eigene Kanaele koennen geloescht werden.");
+      return;
+    }
+    if (conv.name === "allgemein" || conv.name === "random") {
+      UI.toast("Standard-Kanaele bleiben erhalten.");
+      return;
+    }
+    if (!confirm('Kanal "' + conv.name + '" wirklich loeschen?')) return;
+    const { data, error } = await sb.from("channels").delete().eq("id", conv.id).select("id");
+    if (error) {
+      UI.toast(error.message || "Loeschen fehlgeschlagen.");
+      return;
+    }
+    if (!data || !data.length) {
+      UI.toast("Keine Berechtigung zum Loeschen.");
+      return;
+    }
+    selectedConv = null;
+    await loadChannels();
+    UI.toast("Kanal geloescht");
+    currentView = "channels";
+    render();
+  }
+
   function bindSearch() {
     const E = UI.els;
     E.searchInput.addEventListener("input", (e) => {
@@ -714,6 +752,12 @@ const APP = (function () {
       selectedConv = null;
       render();
     });
+    const btnDelCh = document.getElementById("btn-delete-channel");
+    if (btnDelCh) {
+      btnDelCh.addEventListener("click", () => {
+        if (selectedConv) deleteChannel(selectedConv);
+      });
+    }
     E.btnStartHuddle.addEventListener("click", () => {
       currentView = "calls";
       selectedConv = null;
@@ -977,7 +1021,7 @@ const APP = (function () {
     document.getElementById("btn-call-flip").addEventListener("click", () => Calls.switchCamera());
   }
 
-  return { init };
+  return { init, createChannel, deleteChannel, getChannels: () => channels, getSelected: () => selectedConv };
 })();
 
 if (document.readyState === "loading") {
